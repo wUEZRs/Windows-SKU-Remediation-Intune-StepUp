@@ -33,27 +33,26 @@ function Invoke-Remediation {
         }
     }
 
-    if ($accountsToRemove.Count -gt 0) {
-        Write-Output "CRITICAL ERROR: Found $($accountsToRemove.Count) orphaned WorkplaceJoin entries in the registry."
-        Write-Output "-> AUTO-REMEDIATING: Deleting conflicting TokenBroker .tbacct files and Registry keys..."
-        $basePath = "C:\Users"
-        $relativePath = "AppData\Local\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Accounts"
+    $TbPath = "C:\Users\*\AppData\Local\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Accounts"
+    $tbFiles = @(Get-ChildItem -Path $TbPath -Filter "*.tbacct" -Recurse -ErrorAction SilentlyContinue)
+
+    # A healthy PRT cache should have 1-2 .tbacct files per user. If > 3, it indicates severe thrashing.
+    if ($accountsToRemove.Count -gt 0 -or $tbFiles.Count -gt 3) {
+        Write-Output "CRITICAL ERROR: Identity desync or TokenBroker corruption detected. Found $($accountsToRemove.Count) orphaned Registry entries and $($tbFiles.Count) .tbacct files."
+        Write-Output "-> AUTO-REMEDIATING: Performing Unconditional TokenBroker Purge..."
+        
+        Get-Process -Name "Microsoft.AAD.BrokerPlugin", "backgroundTaskHost" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        
+        if ($tbFiles.Count -gt 0) {
+            $tbFiles | Remove-Item -Force -ErrorAction SilentlyContinue
+            Write-Output "Purged $($tbFiles.Count) .tbacct files... Purge 100% successful."
+        }
+        
         foreach ($account in $accountsToRemove) {
-            $searchTerm = $account.UserEmail
-            foreach ($userProfile in Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue) {
-                $folderPath = Join-Path -Path $userProfile.FullName -ChildPath $relativePath
-                if (Test-Path -Path $folderPath) {
-                    $tbacctFiles = Get-ChildItem -Path $folderPath -Filter "*.tbacct" -ErrorAction SilentlyContinue
-                    foreach ($file in $tbacctFiles) {
-                        $fileContent = [System.IO.File]::ReadAllBytes($file.FullName)
-                        $textContent = -join ($fileContent | ForEach-Object { if ($_ -ge 0x20 -and $_ -le 0x7E) { [char]$_ } })
-                        if ($textContent -like "*$searchTerm*") { Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue }
-                    }
-                }
-            }
             Remove-Item -Path $account.GuidPath -Recurse -Force -ErrorAction SilentlyContinue
         }
-        Write-Output "-> REMEDIATION COMPLETE: Duplicate accounts purged."
+        
+        Write-Output "-> REMEDIATION COMPLETE: Duplicate accounts and corrupted tokens purged."
         Write-Output "ACTION REQUIRED: Revoke the user's session in Entra ID now, before the user reboots."
         Write-Output "NOTE: Returning Exit Code 33 to signal the RMM to trigger a reboot prompt after identity remediation."
         [Environment]::ExitCode = 33
@@ -200,7 +199,19 @@ function Invoke-Remediation {
             $hexResult = "0x$($lastRun.LastTaskResult.ToString('X'))"
             if ($lastRun.LastTaskResult -ne 0) {
                 Write-Output "CRITICAL ERROR: LicenseAcquisition task failed with error code $hexResult."
-                if ($hexResult -eq "0x87E10C0A") { Write-Output "  -> Indicates MFA ClipRenew loop or Entra token failure. Primary TokenBroker cache must be wiped." }
+                if ($hexResult -eq "0x87E10C0A") { 
+                    Write-Output "  -> Indicates MFA ClipRenew loop or Entra token failure."
+                    Write-Output "  -> AUTO-REMEDIATING: Performing unconditional TokenBroker & ClipSVC purge..."
+                    Stop-Service -Name ClipSVC -Force -ErrorAction SilentlyContinue
+                    $ClipPath = "C:\ProgramData\Microsoft\Windows\ClipSVC"
+                    if (Test-Path $ClipPath) { Remove-Item -Path "$ClipPath\tokens.*" -Force -ErrorAction SilentlyContinue }
+                    Get-Process -Name "Microsoft.AAD.BrokerPlugin", "backgroundTaskHost" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+                    $TbPath = "C:\Users\*\AppData\Local\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Accounts"
+                    Get-ChildItem -Path $TbPath -Filter "*.tbacct" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+                    Write-Output "  -> TokenBroker purged. Returning Exit Code 33 to force reboot and rebuild PRT."
+                    [Environment]::ExitCode = 33
+                    return
+                }
                 if ($hexResult -eq "0xD0000272") { Write-Output "  -> Indicates WAM Token decryption failure, often caused by TPM corruption." }
                 if ($hexResult -eq "0x80072EE2") { 
                     Write-Output "  -> Indicates ERROR_INTERNET_TIMEOUT (Proxy/Firewall blocking MS servers)." 
