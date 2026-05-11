@@ -9,9 +9,12 @@ The Subscription Step-Up (Pro to Enterprise via Entra ID) relies on:
 
 ## Known Blockers & Remediation Strategies
 
-### 1. TokenBroker Conflicts (Double-Registration / Corrupt Cache)
-**Symptom:** "Fix work or school account" popups, failure to sync licenses, or persistent `0x87E10C0A` MFA loops despite Session Revokes.
-**Fix:** A Session Revoke only drops the token in the cloud. If WAM fails to overwrite a broken local token, you must physically wipe the cache. Delete orphaned GUIDs under `HKU\<SID>\Software\Microsoft\Windows NT\CurrentVersion\WorkplaceJoin\JoinInfo` and matching `.tbacct` files in `AppData\Local\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Accounts\`. This forces a clean PRT rebuild on next login.
+### 1. TokenBroker Conflicts & Orphaned .tbacct Thrashing (0xCAA100D8)
+**Symptom:** "Fix work or school account" popups, failure to sync licenses, or persistent `0x87E10C0A` MFA loops driven by underlying `0xCAA100D8` (Login hint mismatch) errors in the WAM Operational log.
+**Root Cause:** If a remediation script only deletes `.tbacct` files that match existing `WorkplaceJoin` registry keys, any orphaned `.tbacct` files are left behind permanently. Over time, TokenBroker can accumulate dozens of orphaned files (e.g., 40+), completely corrupting the identity cache.
+**Fix:** A Session Revoke only drops the token in the cloud. You must physically wipe the cache by unconditionally deleting ALL `.tbacct` files in `AppData\Local\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Accounts\`, regardless of whether a matching registry key exists. 
+**Threshold:** On strictly single-user devices, a healthy PRT cache should have 1-2 `.tbacct` files. If you detect > 3 files, the cache is thrashing and must be aggressively purged.
+**Critical Testing Note:** A reboot alone does **not** rebuild the PRT. The actual human end-user must physically type their password or use Windows Hello to log into the desktop. If you wipe the TokenBroker and attempt to trigger `LicenseAcquisition` via SYSTEM before the user logs in, WAM will have 0 tokens, and the task will instantly throw `2279672842` (Decimal for `0x87E10C0A`). **Do not let this false-positive error deceive you.** The aggressive purge successfully unblocks the license channel, allowing the OS to fetch the Enterprise SKU shortly after, despite the task scheduler throwing this error initially.
 
 ### 2. AAD Broker Plugin Appx Missing
 **Symptom:** The `Microsoft.AAD.BrokerPlugin` Appx package is uninstalled or corrupted. Cloud AP cannot communicate with Entra ID.
