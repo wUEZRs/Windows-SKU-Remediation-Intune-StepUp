@@ -35,11 +35,25 @@ The Subscription Step-Up (Pro to Enterprise via Entra ID) relies on:
 **Verification:** A true "Dead SID" means the local user profile is orphaned because the Entra ID user was deleted/recreated. Verify this by decoding the local `S-1-12-1` SID back into a GUID and cross-referencing it with the user's actual Object ID in Entra ID.
 **Fix:** Wiping the local Windows user profile (`C:\Users\<user>`) is only necessary if the decoded Object ID does NOT match.
 
-### 6. LicenseAcquisition Exit Code 0 (Success Delay)
-**Symptom:** `LicenseAcquisition` task runs but the OS still reports Windows 11 Pro immediately after.
-**Root Cause:** The OS step-up is not instantaneous. If the Task Scheduler exit code is `0`, the acquisition succeeded. It can take up to 30 minutes (or a forced MDM Sync + Reboot) for the SKU switch to reflect in the OS caption.
+### 6. LicenseAcquisition Exit Code 0 (Success Delay & Reboot Requirement)
+**Symptom:** `LicenseAcquisition` task runs (Exit Code 0) but the OS still reports Windows 11 Pro immediately after, or remains stuck on Pro for days.
+**Root Cause:** The OS step-up is not instantaneous. If the Task Scheduler exit code is `0`, the payload successfully downloaded. However, the OS relies heavily on the `ClipSVC` cache and local token states. 
+**Empirical Observation:** Due to heavy local caching (ClipSVC, WAM, Entra PRT), it often requires multiple script executions and **multiple reboots** for a corrupted device to fully switch. 
+**Gotcha:** A device may sit at "Exit Code 0" indefinitely if it is not rebooted. If the script succeeds but the SKU doesn't change, the user MUST reboot the PC to finalize the transition. It can take up to 30 minutes and an MDM Sync after the reboot to reflect the Enterprise caption.
 
-### 7. WAM / TPM Failure
+### 7. License Error 5 ("No Root License Found") & Ghost Network Timeouts
+**Symptom:** The `LicenseAcquisition` task continuously fails with `0x80072EE2` (`ERROR_INTERNET_TIMEOUT`), but network checks prove endpoints are reachable. Additionally, `slmgr /ato` fails with "The activation server determined that the specified product key has been blocked."
+**Root Cause:** The Enterprise Step-Up is an "add-on" subscription that fundamentally requires a healthy, fully activated **Windows 10/11 Pro** base license (the "root"). If the underlying Pro digital entitlement is missing (e.g., Motherboard replacement), the generic `VK7JG` Retail key is explicitly blocked by Microsoft activation servers.
+**Gotcha:** Because there is no base license, the local `sppsvc` hangs when attempting to parse the Entra ID step-up payload. This local service hang surfaces to the Task Scheduler as a "fake" `0x80072EE2` internet timeout, sending admins down the wrong troubleshooting path.
+**Fix:** You must extract the physical OEM key embedded in the motherboard firmware (ACPI MSDM table) and inject it to bypass the block:
+```powershell
+$oemKey = (Get-CimInstance -Query 'select * from SoftwareLicensingService').OA3xOriginalProductKey
+cscript //nologo c:\windows\system32\slmgr.vbs /ipk $oemKey
+cscript //nologo c:\windows\system32\slmgr.vbs /ato
+```
+This self-healing logic is natively integrated into Tier 3 of the remediation pipeline.
+
+### 8. WAM / TPM Failure
 **Symptom:** Error `0xD0000272` and Event Log `1098`.
 **Root Cause:** TPM corruption preventing decryption of PRT.
 **Fix:** Clear TPM or unjoin/rejoin Entra ID.

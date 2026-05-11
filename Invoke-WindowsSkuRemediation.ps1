@@ -133,8 +133,13 @@ function Invoke-Remediation {
     Write-Output "Step 2: Reinstalling system license files..."
     cscript //nologo $env:SystemRoot\System32\slmgr.vbs /rilc | Out-Null
 
-    Write-Output "Step 3: Re-applying Generic Retail Pro Key..."
-    cscript //nologo $env:SystemRoot\System32\slmgr.vbs /ipk VK7JG-NPHTM-C97JM-9MPGT-3V66T | Out-Null
+    Write-Output "Step 3: Attempting to apply OEM BIOS Key, falling back to Generic Retail Pro Key..."
+    $oemKey = (Get-CimInstance -Query 'select * from SoftwareLicensingService' -ErrorAction SilentlyContinue).OA3xOriginalProductKey
+    if ($oemKey) {
+        cscript //nologo $env:SystemRoot\System32\slmgr.vbs /ipk $oemKey | Out-Null
+    } else {
+        cscript //nologo $env:SystemRoot\System32\slmgr.vbs /ipk VK7JG-NPHTM-C97JM-9MPGT-3V66T | Out-Null
+    }
 
     Write-Output "Step 4: Triggering base Windows activation..."
     cscript //nologo $env:SystemRoot\System32\slmgr.vbs /ato | Out-Null
@@ -213,14 +218,15 @@ function Invoke-Remediation {
                     return
                 }
                 if ($hexResult -eq "0xD0000272") { Write-Output "  -> Indicates WAM Token decryption failure, often caused by TPM corruption." }
-                if ($hexResult -eq "0x80072EE2") { 
-                    Write-Output "  -> Indicates ERROR_INTERNET_TIMEOUT (Proxy/Firewall blocking MS servers)." 
+                if ($hexResult -in @("0x80072EE2", "0x80072EE7")) { 
+                    if ($hexResult -eq "0x80072EE2") { Write-Output "  -> Indicates ERROR_INTERNET_TIMEOUT. If network is healthy, this may be a GHOST timeout caused by a missing underlying Pro digital entitlement (License Status 5)." }
+                    if ($hexResult -eq "0x80072EE7") { Write-Output "  -> Indicates ERROR_INTERNET_NAME_NOT_RESOLVED (DNS failure or proxy blocking MS servers)." }
                     Write-Output "  -> NETWORK DIAGNOSTIC:"
                     ipconfig /flushdns | Out-Null
                     $dnsTest = Resolve-DnsName licensing.mp.microsoft.com -ErrorAction SilentlyContinue
                     if ($dnsTest) { Write-Output "     - DNS Resolution to licensing.mp.microsoft.com: SUCCESS" } else { Write-Output "     - DNS Resolution to licensing.mp.microsoft.com: FAILED" }
                     $tcpTest = Test-NetConnection licensing.mp.microsoft.com -Port 443 -WarningAction SilentlyContinue
-                    if ($tcpTest.TcpTestSucceeded) { Write-Output "     - TCP Port 443 Connection: SUCCESS" } else { Write-Output "     - TCP Port 443 Connection: FAILED (Blocked by Firewall/Proxy)" }
+                    if ($tcpTest.TcpTestSucceeded) { Write-Output "     - TCP Port 443 Connection: SUCCESS (Ghost Timeout likely if activation fails)" } else { Write-Output "     - TCP Port 443 Connection: FAILED (Blocked by Firewall/Proxy)" }
                 }
                 [Environment]::ExitCode = 1
                 return
