@@ -36,10 +36,12 @@ function Invoke-Remediation {
     $TbPath = "C:\Users\*\AppData\Local\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker\Accounts"
     $tbFiles = @(Get-ChildItem -Path $TbPath -Filter "*.tbacct" -Recurse -ErrorAction SilentlyContinue)
 
-    # A healthy PRT cache should have 1-2 .tbacct files per user. If > 3, it indicates severe thrashing.
-    if ($accountsToRemove.Count -gt 0 -or $tbFiles.Count -gt 3) {
-        Write-Output "CRITICAL ERROR: Identity desync or TokenBroker corruption detected. Found $($accountsToRemove.Count) orphaned Registry entries and $($tbFiles.Count) .tbacct files."
-        Write-Output "-> AUTO-REMEDIATING: Performing Unconditional TokenBroker Purge..."
+    # A healthy PRT cache will natively accumulate many .tbacct files (e.g., 15-40+) for various modern apps like Teams, Edge, and Office.
+    # We only preemptively purge and reboot if we detect orphaned WorkplaceJoin registry entries. 
+    # (TokenBroker corruption is otherwise handled specifically via Error 0x87E10C0A later in the script).
+    if ($accountsToRemove.Count -gt 0) {
+        Write-Output "CRITICAL ERROR: Identity desync detected. Found $($accountsToRemove.Count) orphaned Registry entries."
+        Write-Output "-> AUTO-REMEDIATING: Performing Registry & TokenBroker Purge..."
         
         Get-Process -Name "Microsoft.AAD.BrokerPlugin", "backgroundTaskHost" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         
